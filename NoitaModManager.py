@@ -305,10 +305,18 @@ class NoitaLoader(tk.Tk):
         self.combo_presets.bind("<<ComboboxSelected>>", self.load_preset)
         ttk.Button(toolbar, text="保存", width=6, command=self.save_preset_dialog).pack(side="left", padx=2)
         ttk.Button(toolbar, text="删除", width=6, command=self.delete_preset).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="生成快捷方式", command=self.create_shortcut).pack(side="left", padx=10)
+        # Normal Shortcut
+        ttk.Button(toolbar, text="生成快捷方式", command=lambda: self.create_shortcut(dev=False)).pack(side="left", padx=2)
+        # Dev Shortcut
+        ttk.Button(toolbar, text="生成 Dev 快捷方式", command=lambda: self.create_shortcut(dev=True)).pack(side="left", padx=2)
+        
         ttk.Button(toolbar, text="⚙ 设置", command=self.open_settings).pack(side="right", padx=5)
-        ttk.Button(toolbar, text="▶ 启动游戏", command=self.launch_game).pack(side="right", padx=5)
-        ttk.Button(toolbar, text="↻ 同步创意工坊", command=self.sync_mods).pack(side="right", padx=5)
+        # Normal Launch
+        ttk.Button(toolbar, text="▶ 启动", command=lambda: self.launch_game(dev=False)).pack(side="right", padx=2)
+        # Dev Launch
+        ttk.Button(toolbar, text="▶ 启动 Dev", command=lambda: self.launch_game(dev=True)).pack(side="right", padx=2)
+        
+        ttk.Button(toolbar, text="↻ 同步", command=self.sync_mods).pack(side="right", padx=5)
 
         list_frame = tk.Frame(self, bg=self.colors["bg"], padx=10, pady=5)
         list_frame.pack(fill="both", expand=True)
@@ -587,7 +595,7 @@ class NoitaLoader(tk.Tk):
             self.combo_presets['values'] = self.get_preset_list()
             self.combo_presets.set("")
 
-    def create_shortcut(self):
+    def create_shortcut(self, dev=False):
         name = self.combo_presets.get()
         if not name: return messagebox.showwarning("警告", "请先选择一个预设")
         
@@ -600,16 +608,22 @@ class NoitaLoader(tk.Tk):
                 f.write(generate_xml_content(self.mods_data))
 
         # 2. Generate Batch Launcher
-        # We use a batch file to copy config and start game. NO Python involved. No Admin required for this.
-        bat_name = f"Launch_{name}.bat"
+        suffix = "_Dev" if dev else ""
+        exe_name = "noita_dev.exe" if dev else "noita.exe"
+        
+        # Determine Target Config Path
+        if dev:
+            # Dev uses save00 inside game folder
+            target_config = os.path.join(STEAM_NOITA_PATH, "save00", "mod_config.xml")
+            # Ensure save00 exists
+            os.makedirs(os.path.dirname(target_config), exist_ok=True)
+        else:
+            target_config = MOD_CONFIG_PATH
+
+        bat_name = f"Launch_{name}{suffix}.bat"
         bat_path = os.path.join(PRESETS_DIR, bat_name)
         
-        noita_exe = os.path.join(STEAM_NOITA_PATH, "noita.exe")
-        target_config = MOD_CONFIG_PATH # absolute path from python
-        
-        # Batch Connect:
-        # copy /y "PRESET_XML" "TARGET_CONFIG"
-        # start "" "NOITA_EXE"
+        noita_exe = os.path.join(STEAM_NOITA_PATH, exe_name)
         
         bat_content = f"""@echo off
 copy /y "{xml_path}" "{target_config}" >nul
@@ -621,27 +635,53 @@ exit
             
         # 3. Create Shortcut to the BATCH file
         desktop = os.path.expanduser("~/Desktop")
-        lnk_path = os.path.join(desktop, f"Noita - {name}.lnk")
+        lnk_name = f"Noita{suffix} - {name}.lnk"
+        lnk_path = os.path.join(desktop, lnk_name)
         
         ps_script = f"""
         $w = New-Object -ComObject WScript.Shell
         $s = $w.CreateShortcut('{lnk_path}')
         $s.TargetPath = '{bat_path}'
         $s.WorkingDirectory = '{STEAM_NOITA_PATH}'
-        $s.WindowStyle = 7 
+        $s.WindowStyle = 7
         $s.Save()
         """
-        # WindowStyle 7 = Minimized (try to hide batch window)
         
         try:
             subprocess.run(["powershell", "-Command", ps_script], check=True, creationflags=0x08000000)
             messagebox.showinfo("成功", f"快捷方式已创建:\n{lnk_path}")
         except Exception as e: messagebox.showerror("错误", str(e))
 
-    def launch_game(self):
-        exe = os.path.join(STEAM_NOITA_PATH, "noita.exe")
-        if os.path.exists(exe): subprocess.Popen([exe], cwd=STEAM_NOITA_PATH, creationflags=0x00000008)
-        else: messagebox.showerror("错误", "找不到 noita.exe")
+    def launch_game(self, dev=False):
+        exe_name = "noita_dev.exe" if dev else "noita.exe"
+        exe = os.path.join(STEAM_NOITA_PATH, exe_name)
+        
+        # Save config to the appropriate location before launching
+        if dev:
+            target_config = os.path.join(STEAM_NOITA_PATH, "save00", "mod_config.xml")
+            os.makedirs(os.path.dirname(target_config), exist_ok=True)
+        else:
+            target_config = MOD_CONFIG_PATH
+            
+        # Write current mods_data to target config
+        try:
+            xml_bytes = generate_xml_content(self.mods_data)
+            with open(target_config, "wb") as f:
+                f.write(b'<?xml version="1.0" encoding="utf-8"?>\n')
+                f.write(xml_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception as e:
+            messagebox.showerror("错误", f"保存配置失败: {e}")
+            return
+
+        if os.path.exists(exe):
+            # For Dev build, we want the console (CREATE_NEW_CONSOLE = 0x00000010)
+            # For Normal build, we want to detach/hide console (DETACHED_PROCESS = 0x00000008)
+            flags = 0x00000010 if dev else 0x00000008
+            subprocess.Popen([exe], cwd=STEAM_NOITA_PATH, creationflags=flags)
+        else:
+            messagebox.showerror("错误", f"找不到 {exe_name}")
 
 def main():
     sock = get_single_instance_lock()
