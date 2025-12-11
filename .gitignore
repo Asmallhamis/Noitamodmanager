@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Local Config
+loader_config.json
+presets/
+*.lnk
+*.bat
+
+# VSCode
+.vscode/
+
+# Logs
+*.log
