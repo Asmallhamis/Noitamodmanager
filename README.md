@@ -12,8 +12,28 @@
 *   **离线支持**：自动将创意工坊模组转换为本地软链接 (Symlink)，欺骗游戏直接读取，无需 Steam 启动即可加载工坊模组。
 *   **拖拽排序**：支持鼠标拖拽调整模组加载顺序。
 *   **预设系统**：可保存多套模组配置，并生成桌面快捷方式一键启动特定配置。
+*   **高级搜索**：支持复杂的搜索语法（与、或、非、标签搜索）。
+*   **标签管理**：Excel 风格的原位标签编辑，支持双击修改、添加和删除标签。
 *   **智能识别**：自动识别本地模组、工坊副本和工坊软链接。
 *   **零依赖**：基于 Python 标准库编写，无需安装任何第三方库，开箱即用。
+
+## 🔍 搜索语法
+
+搜索框支持强大的过滤功能：
+
+*   **普通搜索**：直接输入关键词，例如 `magic` (搜索名称**或标签**包含 magic 的模组)。
+*   **仅搜名称**：以 `@` 开头，例如 `@magic` (仅搜索名称包含 magic 的模组)。
+*   **标签搜索**：以 `#` 开头，例如 `#funny` (搜索包含 funny 标签的模组)。
+*   **多条件 (AND)**：用空格分隔，例如 `#magic item` (搜索既有 magic 标签，名字或标签又包含 item 的模组)。
+*   **多选 (OR)**：用 `|` 分隔，例如 `#magic|#spells` (搜索有 magic **或** spells 标签的模组)。
+*   **排除 (NOT)**：以 `-` 开头，例如 `-#cheat` (排除包含 cheat 标签的模组)。
+
+## 🏷️ 标签编辑
+
+*   **编辑**：双击“用户标签”或“工坊标签”列的单元格，直接在原位进行编辑。
+*   **新增**：点击编辑框末尾的 `+` 号。
+*   **删除**：点击标签旁的 `x` 号。
+*   **保存**：点击外部区域或按回车键自动保存。
 
 ## 🚀 使用说明
 
@@ -39,7 +59,20 @@
 *   **Offline Support**: Automatically converts Workshop mods to local symlinks, allowing the game to load them without Steam running.
 *   **Drag & Drop Sorting**: Easily reorder mods by dragging.
 *   **Presets**: Save/Load mod configurations and create desktop shortcuts for instant launching.
+*   **Advanced Search**: Supports complex syntax (AND, OR, NOT, Tag search).
+*   **Tag Management**: Excel-style in-place tag editing. Double-click to edit, add, or remove tags.
 *   **Zero Dependencies**: Written in pure Python (Standard Library), no `pip install` needed.
+
+## 🔍 Search Syntax
+
+The search bar supports powerful filtering:
+
+*   **Normal**: Type keywords, e.g., `magic` (finds mods with "magic" in name **OR tags**).
+*   **Name Only**: Start with `@`, e.g., `@magic` (finds mods with "magic" in name only).
+*   **Tag**: Start with `#`, e.g., `#funny` (finds mods with "funny" tag).
+*   **AND**: Separate with space, e.g., `#magic item` (mods with "magic" tag AND "item" in name/tags).
+*   **OR**: Separate with `|`, e.g., `#magic|#spells` (mods with "magic" OR "spells" tag).
+*   **NOT**: Start with `-`, e.g., `-#cheat` (exclude mods with "cheat" tag).
 
 ## 🚀 How to Use
 

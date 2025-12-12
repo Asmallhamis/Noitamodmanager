@@ -33,15 +33,34 @@ import xml.etree.ElementTree as ET
 import subprocess
 import socket
 import webbrowser
+import urllib.request
+import re
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 
 # Configuration
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "loader_config.json")
+TAGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mod_tags.json")
 MOD_CONFIG_PATH = os.path.expandvars(r"%APPDATA%\..\LocalLow\Nolla_Games_Noita\save00\mod_config.xml")
 PRESETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets")
 
 os.makedirs(PRESETS_DIR, exist_ok=True)
+
+def load_tags():
+    if os.path.exists(TAGS_FILE):
+        try:
+            with open(TAGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except: pass
+    return {}
+
+def save_tags(tags_data):
+    try:
+        with open(TAGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(tags_data, f, indent=2, ensure_ascii=False)
+    except: pass
+
+TAGS_DATA = load_tags()
 
 def load_settings():
     default_settings = {
@@ -317,35 +336,248 @@ class NoitaLoader(tk.Tk):
         ttk.Button(toolbar, text="▶ 启动 Dev", command=lambda: self.launch_game(dev=True)).pack(side="right", padx=2)
         
         ttk.Button(toolbar, text="↻ 同步", command=self.sync_mods).pack(side="right", padx=5)
+        ttk.Button(toolbar, text="☁ 获取标签", command=self.fetch_tags).pack(side="right", padx=5)
 
         list_frame = tk.Frame(self, bg=self.colors["bg"], padx=10, pady=5)
         list_frame.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(list_frame, columns=("name", "type", "link"), selectmode="extended", show="headings")
+        self.tree = ttk.Treeview(list_frame, columns=("name", "type", "user_tags", "workshop_tags", "link"), selectmode="extended", show="headings")
         self.tree.heading("name", text="模组名称", anchor="w")
         self.tree.heading("type", text="类型", anchor="w")
+        self.tree.heading("user_tags", text="用户标签", anchor="w")
+        self.tree.heading("workshop_tags", text="工坊标签", anchor="w")
         self.tree.heading("link", text="创意工坊", anchor="center")
-        self.tree.column("name", width=400)
-        self.tree.column("type", width=150)
-        self.tree.column("link", width=100, anchor="center")
+        
+        self.tree.column("name", width=300)
+        self.tree.column("type", width=100)
+        self.tree.column("user_tags", width=150)
+        self.tree.column("workshop_tags", width=150)
+        self.tree.column("link", width=80, anchor="center")
+        
         sb = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        # self.tree.bind("<Double-1>", self.on_double_click)
+        self.tree.bind("<Double-1>", self.on_double_click)
         # self.tree.bind("<Button-1>", self.on_click) # Handled by DragManager
 
+        # Tag Cloud Area
+        tag_frame = tk.LabelFrame(self, text="标签云 (Ctrl+点击添加到搜索)", bg=self.colors["bg"], fg="white", padx=5, pady=5)
+        tag_frame.pack(fill="x", padx=10, pady=5)
+        self.tag_cloud_frame = tag_frame # Container
+        
+        # Use Text widget for wrapping tags
+        self.tag_text = tk.Text(tag_frame, height=4, bg=self.colors["bg"], fg="white", relief="flat", wrap="word", cursor="arrow")
+        self.tag_text.pack(fill="x")
+        
         bottom = tk.Frame(self, bg=self.colors["bg"], pady=10, padx=10)
         bottom.pack(fill="x")
         ttk.Button(bottom, text="全选", command=lambda: self.set_all_enabled(True)).pack(side="left")
         ttk.Button(bottom, text="全不选", command=lambda: self.set_all_enabled(False)).pack(side="left", padx=5)
         self.status = tk.StringVar(value="就绪")
         tk.Label(bottom, textvariable=self.status, bg=self.colors["bg"], fg="#777", font=("Microsoft YaHei UI", 9)).pack(side="right")
+        
+        # Initial Tag Cloud Update
+        self.after(100, self.update_tag_cloud)
+        
+        # Bind Ctrl+F
+        self.bind("<Control-f>", self.show_find_bar)
+        
+    def show_find_bar(self, event=None):
+        if hasattr(self, 'find_window') and self.find_window:
+            self.find_window.lift()
+            self.find_entry.focus_set()
+            return
+
+        self.find_window = tk.Toplevel(self)
+        self.find_window.title("查找")
+        self.find_window.geometry("400x50")
+        self.find_window.configure(bg=self.colors["bg"])
+        self.find_window.resizable(False, False)
+        # Position relative to main window
+        x = self.winfo_x() + self.winfo_width() - 420
+        y = self.winfo_y() + 80
+        self.find_window.geometry(f"+{x}+{y}")
+        
+        f = tk.Frame(self.find_window, bg=self.colors["bg"], padx=5, pady=10)
+        f.pack(fill="both")
+        
+        tk.Label(f, text="查找:", bg=self.colors["bg"], fg="white").pack(side="left")
+        self.find_entry = tk.Entry(f, bg="#2d2d30", fg="white", insertbackground="white")
+        self.find_entry.pack(side="left", fill="x", expand=True, padx=5)
+        self.find_entry.bind("<Return>", self.find_next)
+        self.find_entry.bind("<Shift-Return>", self.find_prev)
+        
+        self.find_label = tk.Label(f, text="0/0", bg=self.colors["bg"], fg="#aaa", width=6)
+        self.find_label.pack(side="left", padx=5)
+        
+        ttk.Button(f, text="↓", width=3, command=self.find_next).pack(side="left")
+        ttk.Button(f, text="↑", width=3, command=self.find_prev).pack(side="left")
+        
+        self.find_entry.focus_set()
+        
+    def find_next(self, event=None):
+        self._find(1)
+        
+    def find_prev(self, event=None):
+        self._find(-1)
+        
+    def _find(self, direction):
+        query = self.find_entry.get().lower()
+        
+        # Clear previous highlights
+        for item in self.tree.get_children():
+            tags = list(self.tree.item(item, "tags"))
+            if "found" in tags:
+                tags.remove("found")
+                self.tree.item(item, tags=tags)
+
+        if not query:
+            self.find_label.config(text="0/0")
+            return
+        
+        total = len(self.filtered_data)
+        if total == 0: return
+        
+        # Find ALL matches
+        matches = []
+        for i, mod in enumerate(self.filtered_data):
+            text = f"{mod.get('_display_name', '')} {','.join(mod.get('user_tags', []))} {','.join(mod.get('workshop_tags', []))}".lower()
+            if query in text:
+                matches.append(str(i))
+        
+        if not matches:
+            self.find_label.config(text="0/0")
+            return
+
+        # Highlight ALL matches
+        # self.tree.selection_set(matches) # Don't select, just highlight
+        for m in matches:
+            tags = list(self.tree.item(m, "tags"))
+            if "found" not in tags:
+                tags.append("found")
+                self.tree.item(m, tags=tags)
+        
+        # Navigate
+        # Get current focus or first selection
+        current = self.tree.focus()
+        if current in matches:
+            curr_idx = matches.index(current)
+            next_idx = (curr_idx + direction) % len(matches)
+            target = matches[next_idx]
+        else:
+            target = matches[0] if direction > 0 else matches[-1]
+            
+        self.tree.focus(target)
+        self.tree.see(target)
+        self.find_label.config(text=f"{matches.index(target)+1}/{len(matches)}")
 
     def on_search(self, *args):
-        query = self.search_var.get().lower()
-        if not query: self.filtered_data = list(self.mods_data)
-        else: self.filtered_data = [m for m in self.mods_data if query in m.get('_display_name', '').lower()]
+        query = self.search_var.get().lower().strip()
+        if not query:
+            self.filtered_data = list(self.mods_data)
+        else:
+            # Parse Query
+            # Terms separated by space are AND
+            # Terms separated by | are OR (within a term group)
+            # Terms starting with # are Tags
+            
+            terms = query.split()
+            self.filtered_data = []
+            
+            for mod in self.mods_data:
+                match_all = True
+                for term in terms:
+                    # Handle Negation (e.g. -#tag or -name)
+                    is_negation = term.startswith('-')
+                    if is_negation:
+                        term = term[1:]
+                        if not term: continue # Skip empty negation
+
+                    # Handle OR logic (e.g. #magic|#item)
+                    sub_terms = term.split('|')
+                    match_any = False
+                    
+                    for sub in sub_terms:
+                        sub = sub.strip()
+                        if not sub: continue
+                        is_tag = sub.startswith('#')
+                        clean_sub = sub[1:] if is_tag else sub
+                        
+                        if is_tag:
+                            # Check tags
+                            mod_tags = [t.lower().strip() for t in mod.get('user_tags', []) + mod.get('workshop_tags', [])]
+                            if any(clean_sub in t for t in mod_tags):
+                                match_any = True
+                                break
+                        elif sub.startswith('@'):
+                            # Name Only Search (e.g. @magic)
+                            clean_name_sub = sub[1:]
+                            name = mod.get('_display_name', mod['name']).lower()
+                            if clean_name_sub in name:
+                                match_any = True
+                                break
+                        else:
+                            # Default: Check Name OR Tags
+                            name = mod.get('_display_name', mod['name']).lower()
+                            mod_tags = [t.lower().strip() for t in mod.get('user_tags', []) + mod.get('workshop_tags', [])]
+                            
+                            # Check Name
+                            if clean_sub in name:
+                                match_any = True
+                            # Check Tags
+                            elif any(clean_sub in t for t in mod_tags):
+                                match_any = True
+                                
+                            if match_any: break
+                    
+                    # Logic:
+                    # Normal: If NOT match_any -> Fail
+                    # Negation: If match_any -> Fail
+                    if is_negation:
+                        if match_any:
+                            match_all = False
+                            break
+                    else:
+                        if not match_any:
+                            match_all = False
+                            break
+                
+                if match_all:
+                    self.filtered_data.append(mod)
+
         self.populate_tree()
+        self.update_tag_cloud()
+
+    def update_tag_cloud(self):
+        # Collect all tags from visible mods
+        tags = set()
+        for mod in self.mods_data:
+            # Ensure tags are stripped
+            tags.update([t.strip() for t in mod.get('user_tags', []) if t.strip()])
+            tags.update([t.strip() for t in mod.get('workshop_tags', []) if t.strip()])
+        
+        sorted_tags = sorted(list(tags))
+        
+        self.tag_text.config(state="normal")
+        self.tag_text.delete("1.0", "end")
+        
+        if not sorted_tags:
+            self.tag_text.insert("end", "暂无标签 (点击 '获取标签' 或手动添加)")
+        
+        for tag in sorted_tags:
+            # Create a label that looks like a chip
+            btn = tk.Label(self.tag_text, text=f" {tag} ", bg="#3e3e42", fg="#dcdcdc", cursor="hand2", relief="flat", padx=4, pady=2)
+            btn.bind("<Button-1>", lambda e, t=tag: self.add_tag_to_search(t))
+            self.tag_text.window_create("end", window=btn, padx=4, pady=4)
+            
+        self.tag_text.config(state="disabled")
+
+    def add_tag_to_search(self, tag):
+        current = self.search_var.get().strip()
+        tag_str = f"#{tag}"
+        if tag_str not in current:
+            if current: current += " "
+            self.search_var.set(current + tag_str)
 
     def build_workshop_map(self):
         """Scans Workshop config to map ModFolderName -> WorkshopID"""
@@ -422,8 +654,19 @@ class NoitaLoader(tk.Tk):
                             '_is_link': is_link
                         })
         
+        # Merge Tags
+        for mod in self.mods_data:
+            key = mod['name']
+            if key in TAGS_DATA:
+                mod['user_tags'] = [t.strip() for t in TAGS_DATA[key].get('user_tags', []) if t.strip()]
+                mod['workshop_tags'] = [t.strip() for t in TAGS_DATA[key].get('workshop_tags', []) if t.strip()]
+            else:
+                mod['user_tags'] = []
+                mod['workshop_tags'] = []
+
         self.filtered_data = list(self.mods_data)
         self.populate_tree()
+        self.update_tag_cloud()
 
     def populate_tree(self):
         self.tree.delete(*self.tree.get_children())
@@ -432,6 +675,7 @@ class NoitaLoader(tk.Tk):
         self.tree.tag_configure("local", foreground="#aaaaaa")
         self.tree.tag_configure("workshop", foreground="#dddddd")
         self.tree.tag_configure("linked", foreground="#00ff00") # Green for linked
+        self.tree.tag_configure("found", background="#663300") # Brighter Orange Highlight
 
         for i, mod in enumerate(self.filtered_data):
             enabled = mod.get('enabled') == '1'
@@ -455,15 +699,264 @@ class NoitaLoader(tk.Tk):
 
             link_txt = "Steam" if wid != '0' else "-"
             
+            u_tags = ", ".join(mod.get('user_tags', []))
+            w_tags = ", ".join(mod.get('workshop_tags', []))
+
             # Combine tags
             tags = [row_tag]
             if wid != '0': tags.append("mylink")
             
-            self.tree.insert("", "end", iid=str(i), values=(name, type_str, link_txt), tags=tags)
+            self.tree.insert("", "end", iid=str(i), values=(name, type_str, u_tags, w_tags, link_txt), tags=tags)
 
     def get_item_index(self, item_id):
         try: return int(item_id)
         except: return None
+    def on_double_click(self, event):
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell": return
+        
+        col = self.tree.identify_column(event.x)
+        item_id = self.tree.identify_row(event.y)
+        if not item_id: return
+        
+        mod_idx = int(item_id)
+        mod = self.filtered_data[mod_idx]
+
+        # Column #1: Toggle Checkbox (Name column)
+        if col == "#1":
+            curr = mod.get('enabled', '0')
+            mod['enabled'] = '1' if curr == '0' else '0'
+            self.populate_tree()
+            self.save_config()
+            
+        # Column #3: User Tags, #4: Workshop Tags
+        elif col in ("#3", "#4"):
+            self.edit_cell(item_id, col, mod)
+
+    def edit_cell(self, item_id, col, mod):
+        try:
+            bbox = self.tree.bbox(item_id, column=col)
+            if not bbox: return
+            x, y, w, h = bbox
+        except: return
+
+        # Close existing editor if any
+        if hasattr(self, 'editor_win') and self.editor_win:
+            self.editor_win.destroy()
+
+        key = 'user_tags' if col == "#3" else 'workshop_tags'
+        
+        # Calculate screen coordinates
+        root_x = self.tree.winfo_rootx() + x
+        root_y = self.tree.winfo_rooty() + y
+        
+        # Create Overlay Window
+        self.editor_win = tk.Toplevel(self)
+        self.editor_win.overrideredirect(True)
+        # Use a slightly larger height to allow flow layout to show multiple lines if needed
+        # But keep width matched to cell
+        editor_h = max(h, 100)
+        self.editor_win.geometry(f"{w}x{editor_h}+{root_x}+{root_y}")
+        self.editor_win.configure(bg=self.colors["bg"])
+        self.editor_win.attributes("-topmost", True)
+        
+        # Container for tags (Flow layout using Text widget)
+        container = tk.Text(self.editor_win, bg=self.colors["bg"], fg="white", relief="flat", wrap="word", cursor="arrow")
+        container.pack(fill="both", expand=True, padx=2, pady=2)
+        
+        def save_changes():
+            mod_name = mod['name']
+            if mod_name not in TAGS_DATA: TAGS_DATA[mod_name] = {}
+            TAGS_DATA[mod_name][key] = mod.get(key, [])
+            save_tags(TAGS_DATA)
+            self.populate_tree()
+            self.update_tag_cloud()
+
+        def render():
+            container.config(state="normal")
+            container.delete("1.0", "end")
+            
+            tags = mod.get(key, [])
+            for i, tag in enumerate(tags):
+                # Tag Chip Frame
+                f = tk.Frame(container, bg="#3e3e42", pady=1, padx=2)
+                
+                # Tag Label
+                lbl = tk.Label(f, text=tag, bg="#3e3e42", fg="#dcdcdc", font=("Segoe UI", 9))
+                lbl.pack(side="left")
+                
+                # Delete Button (small x)
+                x_btn = tk.Label(f, text="✕", bg="#3e3e42", fg="#ff5555", cursor="hand2", font=("Segoe UI", 7))
+                x_btn.pack(side="left", padx=(2, 0))
+                x_btn.bind("<Button-1>", lambda e, idx=i: delete_tag(idx))
+                
+                # Bind Double Click on Label and Frame to Edit
+                lbl.bind("<Double-Button-1>", lambda e, idx=i: start_edit(idx))
+                f.bind("<Double-Button-1>", lambda e, idx=i: start_edit(idx))
+                
+                container.window_create("end", window=f, padx=2, pady=2)
+            
+            # Add "+" Button
+            add_btn = tk.Label(container, text=" + ", bg="#2d2d30", fg="#4da6ff", cursor="hand2", font=("Segoe UI", 10, "bold"), relief="solid", borderwidth=1)
+            add_btn.bind("<Button-1>", lambda e: start_add())
+            container.window_create("end", window=add_btn, padx=2, pady=2)
+            
+            container.config(state="disabled")
+
+        def delete_tag(index):
+            tags = mod.get(key, [])
+            if 0 <= index < len(tags):
+                tags.pop(index)
+                save_changes()
+                render()
+
+        def start_edit(index):
+            container.config(state="normal")
+            container.delete("1.0", "end")
+            
+            tags = mod.get(key, [])
+            for i, tag in enumerate(tags):
+                if i == index:
+                    # Render Entry
+                    e = tk.Entry(container, bg="#252526", fg="white", font=("Segoe UI", 9), width=max(5, len(tag)+2))
+                    e.insert(0, tag)
+                    e.select_range(0, "end")
+                    e.bind("<Return>", lambda event, idx=i, entry=e: finish_edit(idx, entry))
+                    e.bind("<FocusOut>", lambda event, idx=i, entry=e: finish_edit(idx, entry))
+                    container.window_create("end", window=e, padx=2, pady=2)
+                    e.focus_set()
+                else:
+                    # Render Chip
+                    f = tk.Frame(container, bg="#3e3e42", pady=1, padx=2)
+                    lbl = tk.Label(f, text=tag, bg="#3e3e42", fg="#dcdcdc", font=("Segoe UI", 9))
+                    lbl.pack(side="left")
+                    x_btn = tk.Label(f, text="✕", bg="#3e3e42", fg="#ff5555", cursor="hand2", font=("Segoe UI", 7))
+                    x_btn.pack(side="left", padx=(2, 0))
+                    x_btn.bind("<Button-1>", lambda e, idx=i: delete_tag(idx))
+                    lbl.bind("<Double-Button-1>", lambda e, idx=i: start_edit(idx))
+                    f.bind("<Double-Button-1>", lambda e, idx=i: start_edit(idx))
+                    container.window_create("end", window=f, padx=2, pady=2)
+            
+            container.config(state="disabled")
+
+        def finish_edit(index, entry):
+            entry.unbind("<Return>")
+            entry.unbind("<FocusOut>")
+            new_text = entry.get().strip()
+            
+            tags = mod.get(key, [])
+            if index >= len(tags):
+                render()
+                return
+            
+            if new_text:
+                if new_text not in tags or tags.index(new_text) == index:
+                    tags[index] = new_text
+                    save_changes()
+            else:
+                tags.pop(index)
+                save_changes()
+            render()
+
+        def start_add():
+            container.config(state="normal")
+            container.delete("1.0", "end")
+            tags = mod.get(key, [])
+            for i, tag in enumerate(tags):
+                f = tk.Frame(container, bg="#3e3e42", pady=1, padx=2)
+                lbl = tk.Label(f, text=tag, bg="#3e3e42", fg="#dcdcdc", font=("Segoe UI", 9))
+                lbl.pack(side="left")
+                x_btn = tk.Label(f, text="✕", bg="#3e3e42", fg="#ff5555", cursor="hand2", font=("Segoe UI", 7))
+                x_btn.pack(side="left", padx=(2, 0))
+                x_btn.bind("<Button-1>", lambda e, idx=i: delete_tag(idx))
+                lbl.bind("<Double-Button-1>", lambda e, idx=i: start_edit(idx))
+                f.bind("<Double-Button-1>", lambda e, idx=i: start_edit(idx))
+                container.window_create("end", window=f, padx=2, pady=2)
+            
+            # New Entry
+            e = tk.Entry(container, bg="#252526", fg="white", font=("Segoe UI", 9), width=8)
+            e.bind("<Return>", lambda event, entry=e: finish_add(entry))
+            e.bind("<FocusOut>", lambda event, entry=e: finish_add(entry))
+            container.window_create("end", window=e, padx=2, pady=2)
+            e.focus_set()
+            
+            container.config(state="disabled")
+
+        def finish_add(entry):
+            entry.unbind("<Return>")
+            entry.unbind("<FocusOut>")
+            new_text = entry.get().strip()
+            
+            if new_text:
+                tags = mod.get(key, [])
+                if key not in mod: mod[key] = []
+                if new_text not in mod[key]:
+                    mod[key].append(new_text)
+                    save_changes()
+            render()
+
+        def check_focus(event):
+            # If focus moved to something that is NOT a child of editor_win, close
+            focused = self.focus_get()
+            if not focused or str(self.editor_win) not in str(focused):
+                self.editor_win.destroy()
+                self.editor_win = None
+
+        self.editor_win.bind("<FocusOut>", check_focus)
+        self.editor_win.bind("<Escape>", lambda e: self.editor_win.destroy())
+        
+        render()
+        self.editor_win.focus_set()
+
+    def fetch_tags(self):
+        if not messagebox.askyesno("获取标签", "这将联网获取所有工坊模组的标签，可能需要几分钟。\n是否继续？"):
+            return
+            
+        self.status.set("正在获取标签...")
+        self.update()
+        
+        count = 0
+        total = len(self.mods_data)
+        
+        for i, mod in enumerate(self.mods_data):
+            wid = mod.get('workshop_item_id', '0')
+            if wid != '0':
+                self.status.set(f"正在获取 ({i+1}/{total}): {mod.get('_display_name', '')}")
+                self.update()
+                
+                try:
+                    url = f"https://steamcommunity.com/sharedfiles/filedetails/?id={wid}"
+                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        html = response.read().decode('utf-8', errors='ignore')
+                        
+                        tags = set()
+                        
+                        # Method 1: Regex for requiredtags parameter
+                        # Matches: requiredtags[]=Tag (and url encoded versions)
+                        found_tags = re.findall(r'requiredtags(?:%5B|\[)(?:%5D|\])=([^"&]+)', html)
+                        for t in found_tags:
+                            decoded = urllib.request.unquote(t).replace('+', ' ')
+                            tags.add(decoded)
+                        
+                        if tags:
+                            mod_name = mod['name']
+                            if mod_name not in TAGS_DATA: TAGS_DATA[mod_name] = {}
+                            
+                            # Merge with existing workshop tags
+                            existing = set([t.strip() for t in TAGS_DATA[mod_name].get('workshop_tags', []) if t.strip()])
+                            existing.update([t.strip() for t in tags if t.strip()])
+                            TAGS_DATA[mod_name]['workshop_tags'] = list(existing)
+                            mod['workshop_tags'] = list(existing)
+                            count += 1
+                except Exception as e:
+                    print(f"Failed to fetch {wid}: {e}")
+        
+        save_tags(TAGS_DATA)
+        self.populate_tree()
+        self.update_tag_cloud()
+        self.status.set(f"标签获取完成，更新了 {count} 个模组")
+        messagebox.showinfo("完成", f"已更新 {count} 个模组的标签")
 
     def handle_click(self, item_id, event):
         col = self.tree.identify_column(event.x)
@@ -478,8 +971,8 @@ class NoitaLoader(tk.Tk):
             self.save_config()
             self.status.set(f"已{'启用' if new_state=='1' else '禁用'}: {mod.get('_display_name', mod['name'])}")
             
-        # Column #3: Steam Link
-        elif col == "#3":
+        # Column #5: Steam Link
+        elif col == "#5":
             mod = self.filtered_data[int(item_id)]
             if mod.get('workshop_item_id', '0') != '0':
                 webbrowser.open(f"https://steamcommunity.com/sharedfiles/filedetails/?id={mod['workshop_item_id']}")
@@ -578,8 +1071,20 @@ class NoitaLoader(tk.Tk):
         if os.path.exists(path):
             try:
                 with open(path) as f: self.mods_data = json.load(f)
+                
+                # Re-apply global tags to the loaded preset data
+                for mod in self.mods_data:
+                    key = mod['name']
+                    if key in TAGS_DATA:
+                        mod['user_tags'] = [t.strip() for t in TAGS_DATA[key].get('user_tags', []) if t.strip()]
+                        mod['workshop_tags'] = [t.strip() for t in TAGS_DATA[key].get('workshop_tags', []) if t.strip()]
+                    else:
+                        mod['user_tags'] = []
+                        mod['workshop_tags'] = []
+
                 self.filtered_data = list(self.mods_data)
                 self.populate_tree()
+                self.update_tag_cloud()
                 self.save_config()
                 self.status.set(f"已加载预设: {name}")
             except Exception as e: messagebox.showerror("错误", str(e))
